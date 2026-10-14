@@ -1,6 +1,6 @@
-if true then return {} end -- WARN: REMOVE THIS LINE TO ACTIVATE THIS FILE
-
 -- Customize Mason
+-- mason-tool-installer auto-installs the binaries for the formatters used by format-on-save
+-- (configured in lua/plugins/none-ls.lua)
 
 ---@type LazySpec
 return {
@@ -11,17 +11,9 @@ return {
     opts = {
       -- Make sure to use the names found in `:Mason`
       ensure_installed = {
-        -- install language servers
-        "lua-language-server",
-
-        -- install formatters
-        "stylua",
-
-        -- install debuggers
-        "debugpy",
-
-        -- install any other package
-        "tree-sitter-cli",
+        -- install formatters (used by format-on-save, see lua/plugins/none-ls.lua)
+        "stylua", -- Lua
+        "prettier", -- JS/TS, JSON, CSS, HTML, Markdown, YAML
       },
     },
   },

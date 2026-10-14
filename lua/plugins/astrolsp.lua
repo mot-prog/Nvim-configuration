@@ -1,5 +1,3 @@
-if true then return {} end -- WARN: REMOVE THIS LINE TO ACTIVATE THIS FILE
-
 -- AstroLSP allows you to customize the features in AstroNvim's LSP configuration engine
 -- Configuration documentation can be found with `:h astrolsp`
 -- NOTE: We highly recommend setting up the Lua Language Server (`:LspInstall lua_ls`)
@@ -32,7 +30,7 @@ return {
         -- disable lua_ls formatting capability if you want to use StyLua to format your lua code
         -- "lua_ls",
       },
-      timeout_ms = 1000, -- default format timeout
+      timeout_ms = 5000, -- default format timeout (prettier/node startup can exceed the 1000ms default)
       -- filter = function(client) -- fully override the default formatting function
       --   return true
       -- end
@@ -53,6 +51,11 @@ return {
 
       -- the key is the server that is being setup with `vim.lsp.config`
       -- rust_analyzer = false, -- setting a handler to false will disable the set up of that language server
+
+      -- nvim-lspconfig's new `stylua` LSP (`stylua --lsp`) is auto-enabled because the stylua
+      -- binary is on PATH, but it never answers formatting requests and hangs format-on-save.
+      -- Lua formatting is handled by the none-ls stylua formatter instead (see lua/plugins/none-ls.lua)
+      stylua = false,
     },
     -- Configure buffer local auto commands to add when attaching a language server
     autocmds = {
