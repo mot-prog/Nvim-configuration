@@ -7,7 +7,10 @@ return {
   opts = {
     latex = {
       enabled = true,
-      converter = "latex2text",},
+      -- utftex (libtexprintf) does real multi-line unicode math: stacked
+      -- fractions, superscript lines. latex2text is the fallback.
+      converter = { "utftex", "latex2text" },
+    },
   },
   ft = { "markdown" },
 }
