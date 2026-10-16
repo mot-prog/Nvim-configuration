@@ -1,0 +1,11 @@
+CMDS={ "utftex-safe" }
+r1 [$$x[n] = \cos\left(2\pi f_0 \frac{n}{F_s}\right) = \frac{1}{] $=2
+r2 [$e^{j\omega n}$] $=2
+r3 [$\alpha^2 + \beta^2 = \gamma^2$] $=2
+r4 [$F_s$] $=2
+r5 [$T = N T_s$] $=2
+r6 [$m$] $=2
+r7 [$m \in \mathbb{N}$] $=2
+r8 [$f_0$] $=2
+r9 [$m$] $=2
+r10 [$$\int_0^\infty e^{-x^2}\,dx = \frac{\sqrt{\pi}}{2}$$] $=4

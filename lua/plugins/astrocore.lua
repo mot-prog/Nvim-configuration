@@ -51,6 +51,18 @@ return {
         -- This can be found in the `lua/lazy_setup.lua` file
       },
     },
+    -- Line limit as a percentage of the window width, for every filetype.
+    -- All of the logic lives in lua/user/linelength.lua; this only starts it.
+    autocmds = {
+      linelength = {
+        {
+          event = "VimEnter",
+          once = true,
+          desc = "Window-relative line length (colorcolumn + textwidth) for all filetypes",
+          callback = function() require "user.linelength".setup() end,
+        },
+      },
+    },
     -- Mappings can be configured through AstroCore as well.
     -- NOTE: keycodes follow the casing in the vimdocs. For example, `<Leader>` must be capitalized
     mappings = {
@@ -75,6 +87,9 @@ return {
         -- tables with just a `desc` key will be registered with which-key if it's installed
         -- this is useful for naming menus
         -- ["<Leader>b"] = { desc = "Buffers" },
+
+        -- line length guide (see lua/user/linelength.lua, :LineLength for more)
+        ["<Leader>uq"] = { function() require "user.linelength".toggle() end, desc = "Toggle line length limit" },
 
         -- setting a mapping to false will disable it
         -- ["<C-S>"] = false,
