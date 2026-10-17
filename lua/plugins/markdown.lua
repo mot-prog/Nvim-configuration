@@ -125,5 +125,27 @@ return {
       max_height_window_percentage = 50,
     },
     ft = { "markdown" },
+    config = function(_, opts)
+      -- image.nvim renders from a deferred callback (render_scheduler). A bulk
+      -- edit — `:LineLength reflow`, a paste, an undo — can leave the markdown
+      -- treesitter tree holding a range past the end of the buffer, and the next
+      -- render then dies inside Neovim's runtime:
+      --   vim/treesitter.lua:216: Index out of bounds
+      --   (nvim_buf_get_text ← get_node_text ← languagetree.lua _get_injection)
+      -- A render frame is idempotent and re-scheduled on the next event, so
+      -- dropping the broken one is strictly better than throwing. Upstream
+      -- (v1.5.1+22) has no guard here.
+      local scheduler = require "image.utils.render_scheduler"
+      local schedule = scheduler.schedule
+      scheduler.schedule = function(key, callback)
+        schedule(key, function()
+          local ok, err = pcall(callback)
+          if not ok then
+            vim.notify("image.nvim: skipped a render frame: " .. tostring(err), vim.log.levels.DEBUG)
+          end
+        end)
+      end
+      require("image").setup(opts)
+    end,
   },
 }

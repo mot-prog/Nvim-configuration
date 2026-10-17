@@ -35,6 +35,32 @@ What `textwidth` does — and what it does NOT, which is the usual source of
     `:set wrap` if you want the display to break too (at the window edge, not
     at the guide: Neovim has no display-width option below the window width).
 
+Two ways to keep the text inside the guide
+------------------------------------------
+
+`reflow` changes the *file*: the wrap it writes is frozen at the width it was
+written at, so a narrower terminal shows long lines again, and the buffer ends
+up modified for no better reason than having read it.
+
+*Page mode* changes the *window* instead, and is what reading wants:
+
+  * the text window is made exactly as wide as the limit and the leftover
+    columns are parked in an empty window on the right, so the guide and the
+    wrap column coincide and text visibly stops at the guide;
+  * the buffer is never touched — nothing to undo, save, commit or push;
+  * a terminal resize simply re-fits the two windows, so the margin follows the
+    window instead of being baked into the text;
+  * typing wraps at the guide as well (`wrap` is on and `textwidth` equals the
+    window's usable width).
+
+Neovim has no `margin` or `breakat` option, which is why the margin has to be a
+window rather than an option. `auto_page` turns it on by itself for
+`page_filetypes` (markdown, text, pandoc); `<Leader>uo` / `:LineLength page`
+turn it on for the current window in *any* filetype, and switching it off by
+hand sticks — `auto_page` will not re-enable it for that window. If something
+closes the margin window (`:only`, <C-w>q) it is put back; if something keeps
+closing it, page mode gives up on that window.
+
 `shade_margin` (off by default) additionally paints every column past the
 limit with the `ColorColumn` highlight, which reads as a real right margin.
 Only useful with `wrap = true`: with `wrap = false` text legitimately
@@ -42,12 +68,14 @@ continues into that region, so shading would cover what you are reading.
 
 Runtime control: `:LineLength` (status) / `:LineLength 85` / `:LineLength
 toggle` / `:LineLength shade` / `:LineLength tw` / `:LineLength typing` (the
-typing-wrap flags — not the display option) / `:LineLength reflow` (re-wrap the
-text already in the buffer), or `<Leader>uq` to toggle the whole thing.
+typing-wrap flags — not the display option) / `:LineLength page` (display-only
+wrap for this window) / `:LineLength reflow` (re-wrap the text already in the
+buffer), or `<Leader>uq` to toggle the whole thing and `<Leader>uo` page mode.
 
 Tuning: edit `M.config` below — `percent` (0.95 → try 1.0 to use every column),
 `max_limit` (cap it on ultrawide windows), `min_limit` (readability floor for
-very narrow splits), `exclude_filetypes` (opt a filetype out of the rule).
+very narrow splits), `exclude_filetypes` (opt a filetype out of the rule),
+`auto_page` / `page_filetypes` / `page_min_margin` (page mode).
 
 Caveat: `textwidth` is buffer-local, so if the *same* buffer is open in two
 windows of different widths, `colorcolumn` is correct in both but `textwidth`
@@ -67,6 +95,9 @@ local M = {}
 ---@field auto_wrap boolean make `textwidth` wrap while typing by adding `wrap_flags` to 'formatoptions'
 ---@field wrap_flags string the 'formatoptions' flags `auto_wrap` adds: t = typed text, c = comments
 ---@field exclude_filetypes table<string, true> filetypes to leave untouched
+---@field auto_page boolean open a page filetype in a window and that window becomes the page (display-only)
+---@field page_filetypes table<string, true> filetypes `auto_page` applies to
+---@field page_min_margin integer do not page a window whose margin would be narrower than this
 M.config = {
   percent = 0.95, -- 95% of the usable width; 1.0 = use every last column
   min_limit = 40, -- floor; a window narrower than this simply uses its whole width
@@ -76,6 +107,9 @@ M.config = {
   textwidth = true,
   auto_wrap = true, -- without 't'/'c' in 'formatoptions' a set textwidth never wraps typing
   wrap_flags = "tc",
+  auto_page = true, -- see the header: page mode wraps the display at the limit, the file is untouched
+  page_filetypes = { markdown = true, text = true, pandoc = true },
+  page_min_margin = 3,
   exclude_filetypes = {
     -- deliberately fixed-width conventions; uncomment to opt out of the window rule
     -- gitcommit = true,
@@ -143,6 +177,31 @@ local applied = {}
 ---@type table<integer, string>
 local added_flags = {}
 
+---win -> page state (the page-mode section further down fills this in). Declared
+---here because `apply` below needs to know whether a window is a page.
+---@type table<integer, PageState>
+local page = {}
+
+---Windows the user turned page mode off in by hand; `auto_page` leaves them be.
+---@type table<integer, true>
+local page_off_by_user = {}
+
+---The width the limit should be computed from. For a page window that is the
+---width it would have without its margin window: shrinking the text window to
+---the limit must not make the limit shrink again, or page mode would creep
+---inwards on every resize.
+---@param win integer
+---@return integer?
+local function effective_width(win)
+  local usable = text_width(win)
+  if not usable then return nil end
+  local st = page[win]
+  if st and vim.api.nvim_win_is_valid(st.filler) then
+    usable = usable + vim.api.nvim_win_get_width(st.filler)
+  end
+  return usable
+end
+
 ---Make 'formatoptions' carry exactly the wrap flags the current config wants.
 ---'t' wraps typed text at 'textwidth', 'c' does the same inside comments — a
 ---filetype that loads without them (c, java, lua, vim among them) otherwise
@@ -169,7 +228,7 @@ end
 ---@param force? boolean re-apply even if width and buffer are unchanged (after ftplugins ran)
 local function apply(win, force)
   if not M.enabled or skip(win) then return end
-  local width = text_width(win)
+  local width = effective_width(win)
   if not width then return end
   local buf = vim.api.nvim_win_get_buf(win)
   local seen = applied[win]
@@ -202,8 +261,10 @@ end
 function M.refresh()
   applied = {} -- config changed, the cached widths no longer describe the result
   if M.enabled then
+    M.page_fit_all() -- the percentage may have changed: re-balance pages before measuring
     M.apply_all()
   else
+    M.page_off_all()
     for _, win in ipairs(vim.api.nvim_list_wins()) do
       if not skip(win) then
         local buf = vim.api.nvim_win_get_buf(win)
@@ -223,6 +284,228 @@ end
 
 function M.toggle() M.enable(not M.enabled) end
 
+-- Page mode -----------------------------------------------------------------
+--
+-- Hard wrap (`textwidth`, and `:LineLength reflow` for text already in the
+-- buffer) changes the *file*: useful, but it leaves the buffer modified, and the
+-- wrap it wrote is frozen at the width it was written at.
+--
+-- Page mode changes the *window* instead. Neovim has no `margin` option, so the
+-- only way to make the display wrap at the limit is to make the text window
+-- exactly as wide as the limit and park the leftover columns in an empty window
+-- on the right. The buffer is never touched — nothing to undo, save or commit —
+-- and a terminal resize simply re-fits the two windows, so the margin follows
+-- the window instead of being baked into the text.
+
+---@class PageState
+---@field filler integer the empty window holding the right margin
+---@field wrap boolean the window's 'wrap' before page mode
+---@field linebreak boolean idem
+---@field smoothscroll boolean idem
+
+-- page_fit changes window widths, which fires WinResized, which calls back in.
+local fitting = false
+
+-- Margin windows this module opened. They must never be paged themselves (the
+-- `:vsplit` that creates one briefly shows the same buffer in it, which would
+-- otherwise look like a window that wants its own margin) and they do not count
+-- as "another window is open" when deciding whether to auto-page.
+---@type table<integer, true>
+local fillers = {}
+local making = false
+
+---Real windows sharing `win`'s tab page: not a margin window, not a float.
+---(`nvim_list_wins()` spans every tab page, so the tab page has to be filtered.)
+---@param win integer
+---@return integer
+local function real_wins(win)
+  local ok, tab = pcall(vim.api.nvim_win_get_tabpage, win)
+  if not ok or not tab then return 1 end
+  local n = 0
+  for _, w in ipairs(vim.api.nvim_list_wins()) do
+    if not fillers[w] and vim.api.nvim_win_get_tabpage(w) == tab then
+      local ok2, conf = pcall(vim.api.nvim_win_get_config, w)
+      if ok2 and conf.relative == "" then n = n + 1 end
+    end
+  end
+  return n
+end
+
+---How many windows share `win`'s tab page — closing the last one closes the tab.
+---@param win integer
+---@return integer
+local function tab_wins(win)
+  local ok, tab = pcall(vim.api.nvim_win_get_tabpage, win)
+  if not ok or not tab then return 1 end
+  return vim.fn.tabpagewinnr(tab, "$")
+end
+
+---@param win integer
+---@param st PageState
+local function page_restore(win, st)
+  if not vim.api.nvim_win_is_valid(win) then return end
+  local wo = vim.wo[win]
+  wo.wrap, wo.linebreak, wo.smoothscroll = st.wrap, st.linebreak, st.smoothscroll
+end
+
+---@param win integer?
+---@return boolean changed
+function M.page_off(win)
+  win = win or vim.api.nvim_get_current_win()
+  local st = page[win]
+  if not st then return false end
+  page[win] = nil
+  page_restore(win, st)
+  fillers[st.filler] = nil
+  if vim.api.nvim_win_is_valid(st.filler) and tab_wins(st.filler) > 1 then
+    pcall(vim.api.nvim_win_close, st.filler, true)
+  end
+  -- the window just got the margin columns back, so the limit moves: re-apply
+  -- now and again once the layout has settled (closing a window widens its
+  -- neighbours, and that resize is not always visible yet)
+  applied[win] = nil
+  apply(win, true)
+  vim.schedule(M.apply_all)
+  return true
+end
+
+---Re-fit one page window: its usable width becomes the limit for the width the
+---window *would* have without its margin window, so the margin is always exactly
+---`1 - percent` of the space, whatever the terminal is doing.
+---@param win integer
+---The margin window of a page vanished under us (`:only`, <C-w>q, a plugin
+---closing splits). Put it back, but give up if something keeps closing it.
+local rebuild_guard = {}
+local function rebuild_page(win)
+  local now = vim.uv.now()
+  local g = rebuild_guard[win]
+  if not g or now - g.at > 2000 then
+    g = { n = 0, at = now }
+    rebuild_guard[win] = g
+  end
+  g.n = g.n + 1
+  if g.n > 3 then
+    page_off_by_user[win] = true -- someone is fighting us; stop re-adding the margin
+    return
+  end
+  vim.schedule(function()
+    if vim.api.nvim_win_is_valid(win) and not page[win] and not page_off_by_user[win] then
+      M.page_on(win)
+    end
+  end)
+end
+
+local function page_fit(win)
+  local st = page[win]
+  if not st then return end
+  if not vim.api.nvim_win_is_valid(win) then
+    page[win] = nil
+    return
+  end
+  if not vim.api.nvim_win_is_valid(st.filler) then
+    -- the margin window was closed: put the page's margin back
+    page[win] = nil
+    fillers[st.filler] = nil
+    page_restore(win, st)
+    rebuild_page(win)
+    return
+  end
+  local total = effective_width(win)
+  if not total then return end
+  local delta = limit_for(total) - text_width(win)
+  if delta ~= 0 then
+    pcall(vim.api.nvim_win_set_width, win, vim.api.nvim_win_get_width(win) + delta)
+  end
+end
+
+function M.page_fit_all()
+  if fitting then return end
+  fitting = true
+  local wins = {} -- page_fit can drop entries, so iterate a snapshot
+  for win in pairs(page) do wins[#wins + 1] = win end
+  for _, win in ipairs(wins) do page_fit(win) end
+  fitting = false
+end
+
+---Turn page mode on for one window.
+---@param win integer?
+---@return boolean changed
+function M.page_on(win)
+  win = win or vim.api.nvim_get_current_win()
+  if page[win] or skip(win) then return false end
+  local usable = text_width(win)
+  if not usable then return false end
+  if usable - limit_for(usable) < M.config.page_min_margin then return false end
+
+  local wo = vim.wo[win]
+  ---@type PageState
+  local st = { filler = 0, wrap = wo.wrap, linebreak = wo.linebreak, smoothscroll = wo.smoothscroll }
+
+  local cur = vim.api.nvim_get_current_win()
+  local fill, buf
+  making = true -- the split below briefly shows this buffer again: do not auto-page it
+  local ok = pcall(function()
+    vim.api.nvim_set_current_win(win)
+    vim.cmd "vsplit"
+    fill = vim.api.nvim_get_current_win()
+    buf = vim.api.nvim_create_buf(false, true)
+    vim.bo[buf].buftype, vim.bo[buf].bufhidden, vim.bo[buf].swapfile = "nofile", "wipe", false
+    vim.api.nvim_win_set_buf(fill, buf)
+    local fwo = vim.wo[fill]
+    fwo.number, fwo.relativenumber, fwo.signcolumn, fwo.foldcolumn = false, false, "no", "0"
+    fwo.colorcolumn, fwo.cursorline, fwo.spell, fwo.wrap = "", false, false, true
+    pcall(function() fwo.fillchars = "eob: " end)
+    fillers[fill] = true
+    pcall(vim.api.nvim_win_set_width, fill, 1) -- hand almost everything back, page_fit rebalances
+  end)
+  making = false
+  if not ok or not fill then
+    if fill and vim.api.nvim_win_is_valid(fill) then pcall(vim.api.nvim_win_close, fill, true) end
+    vim.api.nvim_set_current_win(cur)
+    return false
+  end
+
+  st.filler = fill
+  page[win] = st
+  wo.wrap, wo.linebreak, wo.smoothscroll = true, true, true
+  vim.api.nvim_set_current_win(cur)
+  page_fit(win)
+  return true
+end
+
+---@param win integer?
+---@return boolean changed
+function M.page_toggle(win)
+  win = win or vim.api.nvim_get_current_win()
+  if page[win] then return M.page_off(win) end
+  return M.page_on(win)
+end
+
+function M.page_off_all()
+  for win in pairs(page) do M.page_off(win) end
+end
+
+---@param win integer?
+---@return boolean
+function M.in_page(win)
+  win = win or vim.api.nvim_get_current_win()
+  return page[win] ~= nil
+end
+
+---A window that should page itself without being asked (filetype-driven).
+---@param win integer
+---@return boolean
+local function auto_page_wanted(win)
+  if not M.enabled or not M.config.auto_page or making or fillers[win] or page[win] or skip(win) then
+    return false
+  end
+  -- Only when the document is the whole tab page: a margin window next to every
+  -- split would leave nothing to read. `<Leader>uo` pages a window in a split.
+  if real_wins(win) > 1 then return false end
+  local ft = vim.api.nvim_get_option_value("filetype", { buf = vim.api.nvim_win_get_buf(win) })
+  return M.config.page_filetypes[ft] == true
+end
+
 ---Set the percentage. Values above 1 are read as percentage points (`85` == `0.85`).
 ---@param n number
 function M.set_percent(n)
@@ -236,17 +519,16 @@ end
 ---Echo the current limit for the current window.
 function M.status()
   local win = vim.api.nvim_get_current_win()
-  local width = text_width(win) or 0
-  local fmt = "line length: %d%% of %d usable cols (win %d)"
-    .. " → limit %d | textwidth %s | colorcolumn %s | %s"
+  local width = effective_width(win) or 0
+  local fmt = "line length: %d%% of %d usable → limit %d | tw %s | cc %s | %s | page %s"
   local msg = fmt:format(
     math.floor(M.config.percent * 100 + 0.5),
     width,
-    vim.api.nvim_win_get_width(win),
     limit_for(width),
     tostring(vim.bo.textwidth),
     vim.wo.colorcolumn == "" and "off" or vim.wo.colorcolumn,
-    M.enabled and "on" or "off"
+    M.enabled and "on" or "off",
+    M.in_page(win) and "on" or "off"
   )
   vim.api.nvim_echo({ { msg, "Normal" } }, false, {})
 end
@@ -261,14 +543,21 @@ local function register_autocmds(augroup)
   vim.api.nvim_create_autocmd(layout_events, {
     group = augroup,
     desc = "Recompute line limit for every window after a layout change",
-    callback = M.apply_all,
+    callback = function()
+      M.page_fit_all() -- first put the columns back where they belong...
+      M.apply_all() -- ...then compute the limit from the resulting widths
+    end,
   })
 
   -- entered a window or buffer → apply to it
   vim.api.nvim_create_autocmd({ "WinEnter", "BufWinEnter", "BufEnter" }, {
     group = augroup,
     desc = "Apply window-relative line limit",
-    callback = function() apply(vim.api.nvim_get_current_win()) end,
+    callback = function()
+      local win = vim.api.nvim_get_current_win()
+      if auto_page_wanted(win) and not page_off_by_user[win] then M.page_on(win) end
+      apply(win)
+    end,
   })
 
   -- FileType fires after the ftplugins have run (this one is registered last),
@@ -277,7 +566,16 @@ local function register_autocmds(augroup)
   vim.api.nvim_create_autocmd("FileType", {
     group = augroup,
     desc = "Re-apply line limit after filetype plugins",
-    callback = function() apply(vim.api.nvim_get_current_win(), true) end,
+    callback = function()
+      local win = vim.api.nvim_get_current_win()
+      apply(win, true)
+      -- The filetype is only reliably known here, so this is where auto-page
+      -- fires. Deferred because page_on changes the window layout, which is not
+      -- something to do in the middle of a FileType autocommand.
+      if auto_page_wanted(win) and not page_off_by_user[win] then
+        vim.schedule(function() M.page_on(win) end)
+      end
+    end,
   })
 
   -- a gutter appeared/disappeared → the usable width changed
@@ -299,8 +597,34 @@ local function register_autocmds(augroup)
 
   vim.api.nvim_create_autocmd("WinClosed", {
     group = augroup,
-    desc = "Forget the cached layout of a closed window",
-    callback = function(event) applied[tonumber(event.match)] = nil end,
+    desc = "Forget a closed window, and clean up page mode around it",
+    callback = function(event)
+      local win = tonumber(event.match)
+      applied[win] = nil
+      page_off_by_user[win] = nil
+      fillers[win] = nil
+      local st = page[win]
+      if st then -- the text window itself went away, so its margin has no purpose
+        page[win] = nil
+        fillers[st.filler] = nil
+        if vim.api.nvim_win_is_valid(st.filler) and tab_wins(st.filler) > 1 then
+          pcall(vim.api.nvim_win_close, st.filler, true)
+        end
+      end
+      local owned = {}
+      for other, oth in pairs(page) do
+        if oth.filler == win then owned[#owned + 1] = { other, oth } end
+      end
+      for _, entry in ipairs(owned) do
+        -- the margin window went away (`:only`, <C-w>q): the page wants it back
+        page[entry[1]] = nil
+        page_restore(entry[1], entry[2])
+        rebuild_page(entry[1])
+      end
+      -- the windows that survived the close are wider now; recompute once the
+      -- layout has settled (a close does not always emit a resize event)
+      vim.schedule(M.apply_all)
+    end,
   })
 
   vim.api.nvim_create_autocmd("BufDelete", {
@@ -421,6 +745,22 @@ local function register_command()
       M.refresh()
       echo("line length: wrap while typing (" .. M.config.wrap_flags .. " in formatoptions) "
         .. (M.config.auto_wrap and "on" or "off") .. " — for display use :set wrap")
+    elseif arg == "page" then
+      -- display-only: the window becomes as wide as the limit and the leftover
+      -- columns go to an empty window on the right. The buffer is not touched.
+      local win = vim.api.nvim_get_current_win()
+      if page[win] then
+        page_off_by_user[win] = true -- auto_page must not put it back on re-entry
+        M.page_off(win)
+        echo("line length: page off — full width again")
+      elseif M.page_on(win) then
+        echo("line length: page on — wraps at the limit, file untouched")
+      else
+        vim.notify(
+          "line length: nothing to page here (window too narrow, or not a normal window)",
+          vim.log.levels.WARN
+        )
+      end
     elseif arg == "reflow" then
       -- `textwidth` never touches text that is already in the buffer, so
       -- re-wrapping it is a deliberate act. No range = the whole buffer, which
@@ -457,7 +797,7 @@ local function register_command()
     range = true, -- `:LineLength reflow` accepts a range / visual selection
     desc = "Line limit as a percentage of the window width",
     complete = function(arglead)
-      local words = { "status", "on", "off", "toggle", "shade", "tw", "typing", "reflow" }
+      local words = { "status", "on", "off", "toggle", "shade", "tw", "typing", "page", "reflow" }
       return vim.tbl_filter(function(w) return w:match "^" .. vim.pesc(arglead) end, words)
     end,
   })

@@ -90,6 +90,10 @@ return {
 
         -- line length guide (see lua/user/linelength.lua, :LineLength for more)
         ["<Leader>uq"] = { function() require "user.linelength".toggle() end, desc = "Toggle line length limit" },
+        ["<Leader>uo"] = {
+          function() require "user.linelength".page_toggle() end,
+          desc = "Toggle page mode (wrap the display at the guide, file untouched)",
+        },
 
         -- setting a mapping to false will disable it
         -- ["<C-S>"] = false,
